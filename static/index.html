@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>电视遥控器</title>
+<meta name="theme-color" content="#07080a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="遥控器">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+<div class="banner" id="banner" hidden>连接已断开 · 点这里重连</div>
+
+<header class="top">
+  <div class="device" id="device">
+    <span class="dot" id="dot" aria-hidden="true"></span>
+    <div class="dev-text">
+      <strong id="devName">MiBOX4</strong>
+      <small id="devStatus">连接中…</small>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button class="round ghost" id="btnShot" aria-label="查看电视画面">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="13" rx="2.5"/><path d="M8 20.5h8"/></svg>
+    </button>
+    <button class="round power" id="btnPower" data-key="POWER" aria-label="电源">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <nav class="modes" id="modes" role="tablist">
+    <button class="mode active" data-mode="box" role="tab">遥控盒子</button>
+    <button class="mode" data-mode="tv" role="tab">遥控电视</button>
+  </nav>
+  <!-- 方向盘 -->
+  <section class="hero">
+    <div class="wheel" id="wheel">
+      <button class="dir up" data-key="UP" data-hold aria-label="上">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-7 6 7"/></svg>
+      </button>
+      <button class="dir left" data-key="LEFT" data-hold aria-label="左">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-7 6 7 6"/></svg>
+      </button>
+      <button class="dir right" data-key="RIGHT" data-hold aria-label="右">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l7 6-7 6"/></svg>
+      </button>
+      <button class="dir down" data-key="DOWN" data-hold aria-label="下">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 7 6-7"/></svg>
+      </button>
+      <button class="ok" data-key="OK" aria-label="确认">OK</button>
+    </div>
+  </section>
+
+  <!-- 音量 -->
+  <section class="volbar" role="group" aria-label="音量">
+    <button class="vol" data-key="VOL_DOWN" data-hold aria-label="音量减">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg><span>音量减</span>
+    </button>
+    <button class="vol mute" data-key="MUTE" aria-label="静音">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5v14L7.5 14.5H4z"/><path d="M17 9.5l4 5M21 9.5l-4 5"/></svg><span>静音</span>
+    </button>
+    <button class="vol" data-key="VOL_UP" data-hold aria-label="音量加">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>音量加</span>
+    </button>
+  </section>
+
+  <p class="hint" id="hint">长按方向键可连续移动</p>
+
+  <!-- 返回 / 主页 / 菜单 / 搜索 -->
+  <section class="grid4">
+    <button class="tile" data-key="BACK" aria-label="返回">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l-6 7 6 7"/><path d="M3 12h13a5 5 0 0 1 0 10"/></svg>
+      <span>返回</span>
+    </button>
+    <button class="tile" data-key="HOME" aria-label="主页">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7"/><path d="M6.5 9.8V20h11V9.8"/></svg>
+      <span>主页</span>
+    </button>
+    <button class="tile" data-key="MENU" aria-label="菜单">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      <span>菜单</span>
+    </button>
+    <button class="tile" data-key="SEARCH" aria-label="搜索">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
+      <span>搜索</span>
+    </button>
+  </section>
+
+  <!-- 播放键 -->
+  <section class="media">
+    <button class="tile flat" data-key="PREV" aria-label="上一个">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14L8 12z"/><path d="M5 5v14"/></svg>
+    </button>
+    <button class="tile flat big" data-key="PLAY_PAUSE" aria-label="播放/暂停">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5l12 7.5-12 7.5z"/></svg>
+    </button>
+    <button class="tile flat" data-key="NEXT" aria-label="下一个">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14l11-7z"/><path d="M19 5v14"/></svg>
+    </button>
+  </section>
+
+  <!-- 应用 -->
+  <section class="block">
+    <h2>应用</h2>
+    <div class="apps" id="apps"></div>
+  </section>
+
+  <!-- 文字输入 -->
+  <section class="block">
+    <h2>输入到电视</h2>
+    <form class="inputbar" id="textForm">
+      <input id="textInput" type="text" inputmode="text" enterkeyhint="send"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+             placeholder="英文/数字搜索词">
+      <button class="send" type="submit" aria-label="发送文字">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-5 16-3.5-6.5z"/></svg>
+      </button>
+    </form>
+    <div class="subkeys">
+      <button class="mini" data-key="DEL">删除</button>
+      <button class="mini" data-key="ENTER">确认</button>
+      <button class="mini" data-key="INFO">信息</button>
+      <button class="mini" data-key="APP_SWITCH">最近</button>
+    </div>
+  </section>
+
+  <button class="installhint" id="installHint" hidden>
+    想当 App 用？点 Safari 分享 → “添加到主屏幕”
+  </button>
+
+  <p class="foot" id="foot">需与电视盒子同一 Wi-Fi</p>
+</main>
+
+<!-- 截屏面板 -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-head">
+    <strong>电视画面</strong>
+    <div>
+      <button class="round ghost" id="btnReload" aria-label="刷新画面">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4h-4"/></svg>
+      </button>
+      <button class="round ghost" id="btnClose" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="shot-wrap" id="shotWrap">
+    <img id="shot" alt="电视画面截图">
+    <div class="shot-loading" id="shotLoading">正在截取电视画面…<br><small>约需 5 秒</small></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

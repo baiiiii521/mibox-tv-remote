@@ -1,0 +1,14 @@
+{
+  "name": "电视遥控器",
+  "short_name": "遥控器",
+  "description": "局域网内控制电视盒子（adb 桥接）",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#07080a",
+  "theme_color": "#07080a",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

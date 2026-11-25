@@ -1,0 +1,15 @@
+# 本机配置（含电视配对 token），别提交
+config.json
+
+# 运行产物
+*.log
+cache/
+__pycache__/
+*.pyc
+
+# 部署用的安装包/密钥
+deploy/
+*.apk
+adbkey
+adbkey.pub
+*.tmp
