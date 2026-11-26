@@ -42,29 +42,22 @@ SHOT_PATH = os.path.join(BASE, "cache", "screen.png")
 SHOT_RAW = os.path.join(BASE, "cache", "screen_raw.png")
 
 DEFAULT_CFG = {
-    "serial": "192.168.1.100:5555",   # 电视盒子的 adb 地址，改成你自己的
     "bind": "0.0.0.0",
     "port": 8795,
-    "model": "MiBOX4",
-    "tv_ip": "192.168.1.101",         # 三星电视 IP，不用电视就留空
+    "active": "mibox",
+    # 多设备：kind=adb 走 adb，kind=tizen 留作三星电视（现在仍走 /api/tv/*）
+    "devices": [
+        {"id": "mibox", "label": "小米盒子", "kind": "adb",
+         "serial": "192.168.1.60:5555", "model": "MiBOX4",
+         "input_dev": "/dev/input/event0"},
+        {"id": "projector", "label": "投影仪", "kind": "adb",
+         "serial": "192.168.1.56:5555", "model": "OBE_C3Air",
+         "input_dev": "/dev/input/event0", "screencap": "pull"},
+    ],
+    "tv_ip": "192.168.1.61",
     "tv_port": 8002,
-    "tv_token": "",                   # 配对后自动写入
+    "tv_token": "",
 }
-
-# 应用快捷入口：换成你盒子上的包名
-#   查包名：adb shell pm list packages -3
-#   查名字：adb shell dumpsys window | grep mCurrentFocus
-APPS = [
-    {"pkg": "com.baipiaozhe.tv", "name": "搜剧TV", "hue": 194},
-    {"pkg": "com.mygithub0.tvbox0.osd_kitkat", "name": "影视仓", "hue": 258},
-    {"pkg": "com.dstv.a1", "name": "毒舌电影", "hue": 14},
-    {"pkg": "com.quark.yun.tv", "name": "夸克TV", "hue": 220},
-    {"pkg": "com.hpplay.happyplay.aw.new", "name": "乐播投屏", "hue": 142},
-    {"pkg": "com.dangbeimarket", "name": "当贝市场", "hue": 200},
-    {"pkg": "com.droidvn.midiaexplorer", "name": "文件管理", "hue": 34},
-    {"pkg": "app.orchard.tv", "name": "电视桌面", "hue": 280},
-    {"pkg": "com.kjnapk.store", "name": "应用商店", "hue": 100},
-]
 
 # Android keycode 映射（KEYCODE_*）—— 慢路径：`input keyevent`，每次约 1.3s
 KEYS = {
@@ -92,7 +85,33 @@ LINUX_KEYS = {
 # 系统不理会（实测停在本应用里不动），KEY_POWER 同理不敢赌。
 INPUT_DEV = "/dev/input/event0"   # aml_keypad（Generic.kl）
 
-APP_NAME = {a["pkg"]: a["name"] for a in APPS}
+# 小米盒子上实际装的应用（package → 显示名 / 渐变色）
+APPS_MIBOX = [
+    {"pkg": "com.baipiaozhe.tv", "name": "搜剧TV", "hue": 194},
+    {"pkg": "com.mygithub0.tvbox0.osd_kitkat", "name": "影视仓", "hue": 258},
+    {"pkg": "com.dstv.a1", "name": "毒舌电影", "hue": 14},
+    {"pkg": "com.quark.yun.tv", "name": "夸克TV", "hue": 220},
+    {"pkg": "com.hpplay.happyplay.aw.new", "name": "乐播投屏", "hue": 142},
+    {"pkg": "com.dangbeimarket", "name": "当贝市场", "hue": 200},
+    {"pkg": "com.droidvn.midiaexplorer", "name": "文件管理", "hue": 34},
+    {"pkg": "app.orchard.tv", "name": "电视桌面", "hue": 280},
+    {"pkg": "com.kjnapk.store", "name": "应用商店", "hue": 100},
+]
+
+# 投影仪（大眼橙 OBE C3Air）上装的
+APPS_PROJECTOR = [
+    {"pkg": "com.baipiaozhe.tv", "name": "搜剧TV", "hue": 194},
+    {"pkg": "app.orchard.tv", "name": "桌面", "hue": 280},
+    {"pkg": "com.dstv.a1", "name": "毒舌电影", "hue": 14},
+    {"pkg": "com.mcat.tv1", "name": "网飞猫", "hue": 8},
+    {"pkg": "com.xiaodianshi.tv.yst", "name": "小电视", "hue": 320},
+    {"pkg": "com.obe.fileexplorer", "name": "文件浏览", "hue": 34},
+    {"pkg": "com.android.tv.settings", "name": "设置", "hue": 210},
+]
+
+APPS_BY_ID = {"mibox": APPS_MIBOX, "projector": APPS_PROJECTOR}
+APPS = APPS_MIBOX                      # 兼容：默认设备
+APP_NAME = {a["pkg"]: a["name"] for a in APPS_MIBOX}
 
 _lock_stdout = threading.Lock()
 
@@ -105,6 +124,20 @@ def log(msg: str) -> None:
     except OSError:
         pass
     print(line, flush=True)
+
+
+def adb_server_alive(timeout: float = 8.0) -> bool:
+    """本机 adb server 是否还能正常应答。
+
+    设备关机也会让 connect 一直失败，所以不能拿「某台连不上」当重启 server
+    的理由——那会把同一台手机上另一台正常设备一起踢下线。
+    """
+    try:
+        out = subprocess.run(["adb", "devices"], capture_output=True,
+                             text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return out.returncode == 0 and "List of devices" in out.stdout
 
 
 def load_cfg() -> dict:
@@ -139,45 +172,111 @@ def _arp_candidates(prefix: str) -> list:
     return seen
 
 
-def discover_box(known_ip: str = "", want_model: str = "", timeout: float = 0.3) -> str:
-    """盒子换了 IP 也能找回来：先扫 /24 找开着 5555 的，再用 getprop 认机型。
+def _serial_online(serial: str, timeout: float = 8.0) -> bool:
+    """`adb devices` 里这个 serial 是否处于 device 状态（可用的长连接）。"""
+    try:
+        out = subprocess.run(["adb", "devices"], capture_output=True,
+                             text=True, timeout=timeout).stdout
+    except (subprocess.SubprocessError, OSError):
+        return False
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if parts and parts[0] == serial:
+            return len(parts) > 1 and parts[1] == "device"
+    return False
+
+
+def _local_ips() -> set:
+    """本机自己的 IPv4 地址。
+
+    扫描时要把自己排除掉：手机自己的 adbd 也开在 5555，`adb connect 自己`
+    会在 adb server 里留下一条 unauthorized 传输层，还可能把正在用的
+    长连接（小米盒子）挤掉——实测扫网段后盒子立刻掉线就是它干的。
+    """
+    ips: set = set()
+    for cmd in (["ip", "-o", "-4", "addr", "show"], ["ifconfig"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=6).stdout
+        except (subprocess.SubprocessError, OSError):
+            continue
+        ips |= set(re.findall(r"inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)", out))
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 53))
+            ips.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    return ips
+
+
+def discover_box(known_ip: str = "", want_model: str = "", timeout: float = 0.35) -> str:
+    """盒子换了 IP 也能找回来：先查 ARP 表，必要时才轻扫 /24，最后用 getprop 认机型。
 
     只在连不上已知地址时调用（DHCP 换租约后 IP 会漂）。返回 "ip:5555" 或 ""。
-    """
-    prefix = ".".join((known_ip or "192.168.1.1:5555").split(".")[:3])
-    hosts = ["%s.%d" % (prefix, i) for i in range(1, 255)]
-    hits: list = []
-    lock = threading.Lock()
 
-    def probe(host: str) -> None:
+    扫描必须"压着打"：一次性 254 个并发连接会把家里这台老路由器打懵，
+    实测连带把小米盒子那条正常的长连接一起打掉（扫描后 6 秒盒子必掉线）。
+    所以先看 ARP（零流量），真要扫也限制 8 并发、分批停一下。
+    """
+    prefix = ".".join((known_ip or "192.168.1.60").split(".")[:3])
+    mine = _local_ips()
+
+    def probe(host: str) -> bool:
         s = socket.socket()
         s.settimeout(timeout)
         try:
-            if s.connect_ex((host, 5555)) == 0:
-                with lock:
-                    hits.append(host)
+            return s.connect_ex((host, 5555)) == 0
         finally:
             s.close()
 
-    # 分批并发：254 个 socket 同时打会把这个小路由器打懵（实测全是假阴性）
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=24) as pool:
-        list(pool.map(probe, hosts))
-    hits.sort(key=lambda h: int(h.split(".")[-1]))
-    log("扫描 %s.0/24（%d 台）：5555 开放 %s" % (prefix, len(hosts), hits or "无"))
+    hits: list = []
+    # 1) ARP 表里的邻居：完全不打流量，够用就别扫全网段
+    arp = [h for h in _arp_candidates(prefix) if h not in mine]
+    for host in arp:
+        if probe(host):
+            hits.append(host)
+    if hits:
+        log("ARP 邻居里有 5555：%s" % hits)
+
+    # 2) 没有线索才扫，而且分批：8 并发 + 每批之间歇 80ms
+    if not hits:
+        hosts = ["%s.%d" % (prefix, i) for i in range(1, 255)]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for i in range(0, len(hosts), 8):
+                batch = hosts[i:i + 8]
+                hits.extend(h for h, ok in zip(batch, pool.map(probe, batch)) if ok)
+                time.sleep(0.08)
+        log("扫描 %s.0/24（%d 台，8 并发）：5555 开放 %s" % (prefix, len(hosts), hits or "无"))
 
     # launchd 起的进程没有"本地网络"权限时，原始 socket 会瞬间失败（假阴性），
     # 这时改用 ARP 表里的已知邻居，再让 adb 去试（adb 有权限）。
     candidates = list(hits)
     if not candidates:
-        candidates = _arp_candidates(prefix)
+        candidates = arp
         log("socket 扫描无结果，改用 ARP 候选：%s" % (candidates or "无"))
 
+    # 把自己排除掉，否则会 adb connect 到本机 adbd（见 _local_ips 的说明）
+    skipped = [h for h in candidates if h in mine]
+    if skipped:
+        log("跳过本机地址：%s" % ", ".join(skipped))
+        candidates = [h for h in candidates if h not in mine]
+    candidates.sort(key=lambda h: int(h.split(".")[-1]))
+
+    known_serial = known_ip if ":" in (known_ip or "") else (known_ip + ":5555" if known_ip else "")
     for host in candidates:
         serial = host + ":5555"
+        if serial == known_serial:
+            continue          # 就是刚连不上的那台，别再 disconnect/connect 折腾一遍
         try:
-            subprocess.run(["adb", "disconnect", serial], capture_output=True, timeout=6)
-            subprocess.run(["adb", "connect", serial], capture_output=True, timeout=8)
+            # 正在正常用的设备绝不能 disconnect：那会把它那条长连接一起掐掉。
+            # 之前找投影仪时每轮都 disconnect 小米盒子，导致盒子每 5 分钟掉一次线。
+            if not _serial_online(serial):
+                subprocess.run(["adb", "disconnect", serial], capture_output=True, timeout=6)
+                subprocess.run(["adb", "connect", serial], capture_output=True, timeout=8)
             out = subprocess.run(["adb", "-s", serial, "shell", "getprop ro.product.model"],
                                  capture_output=True, text=True, timeout=10)
             model = out.stdout.strip()
@@ -195,7 +294,10 @@ class Box:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
+        self.id = cfg.get("id", "box")
+        self.label = cfg.get("label") or cfg.get("model") or self.id
         self.serial = cfg["serial"]
+        self.input_dev = cfg.get("input_dev") or INPUT_DEV
         self.proc = None
         self.buf = bytearray()
         self.cv = threading.Condition()
@@ -205,6 +307,8 @@ class Box:
         self.last_err = ""
         self.focus_cache = ("", 0.0)
         self.last_key_ms = 0
+        self.exec_out_ok = True
+        self.screencap_mode = cfg.get("screencap") or "auto"
         self._info = {}
         self._start()
         threading.Thread(target=self._focus_loop, daemon=True).start()
@@ -235,19 +339,56 @@ class Box:
         正常每 2 分钟扫一次，一直找不到就翻倍，最多 10 分钟。
         """
         last_scan = 0.0
-        scan_gap = 120.0
+        scan_gap = 300.0
         tick = 0
+        fails = 0
         while True:
-            time.sleep(12.0)
+            # 正常时 12 秒一轮；连不上就退避到最长 60 秒。
+            # 一台关机的设备不该让桥接每 12 秒 fork 两个 adb 进程、刷两行日志。
+            time.sleep(min(12.0 * (1 + fails // 3), 60.0))
             tick += 1
             if self.state == "online":
-                scan_gap = 120.0
-                if tick % 5 == 0:      # 每分钟左右补一次全键抬起，兜底防卡键
+                scan_gap = 300.0
+                fails = 0
+                if tick % 5 == 0:      # 每分钟：心跳 + 补一次全键抬起
+                    # 心跳必须有：长驻 shell 断了但进程还没被回收时，
+                    # state 会一直停在线，界面看着正常、按键其实全丢。
+                    try:
+                        self.run("true", timeout=6)
+                    except RuntimeError:
+                        log("%s 心跳失败，重建连接" % self.label)
+                        self.state = "offline"
+                        self._kill()
                     self.release_all()
                 continue
-            log("掉线，尝试重连 %s" % self.serial)
+            if fails == 0:
+                log("%s 掉线，开始重连" % self.label)
+            elif fails % 10 == 0:
+                log("%s 连续 %d 次连不上，继续重试" % (self.label, fails))
             if self.connect():
+                log("%s 已恢复连接" % self.label)
+                self.release_all()     # 断线期间可能留下按下的键，补发抬起
+                fails = 0
                 continue
+            fails += 1
+            # 连续失败本来是为了对付「本机 adb server 卡死」，但一个设备关机
+            # 也会触发它：killing server 会把另一台正在用的设备一起踢下线
+            # （实测投影仪关着 → 小米盒子每几分钟被断一次）。
+            # 所以先只做设备级清理；只有 adb server 本身没响应才全局重启。
+            if fails in (3, 6, 12):
+                log("%s 连续 %d 次连不上，清理该设备的连接" % (self.label, fails))
+                try:
+                    subprocess.run(["adb", "disconnect", self.serial],
+                                   capture_output=True, timeout=10)
+                except (subprocess.SubprocessError, OSError) as exc:
+                    log("adb disconnect 失败: %s" % exc)
+                if not adb_server_alive():
+                    log("adb server 无响应，整机重启")
+                    try:
+                        subprocess.run(["adb", "kill-server"], capture_output=True, timeout=10)
+                        subprocess.run(["adb", "start-server"], capture_output=True, timeout=20)
+                    except (subprocess.SubprocessError, OSError) as exc:
+                        log("重启 adb server 失败: %s" % exc)
             if time.time() - last_scan < scan_gap:
                 continue
             last_scan = time.time()
@@ -258,7 +399,7 @@ class Box:
                 save_cfg(self.cfg)
                 self.connect()
             else:
-                scan_gap = min(scan_gap * 2, 600.0)
+                scan_gap = min(scan_gap * 2, 900.0)
 
     # ---------- 进程管理 ----------
     def _start(self) -> None:
@@ -274,8 +415,11 @@ class Box:
             self.last_err = "adb 未安装"
             return
         threading.Thread(target=self._reader, daemon=True).start()
-        self.state = "online"
-        log("adb shell 已启动 (%s)" % self.serial)
+        # 不能因为「adb shell 进程起来了」就标 online：进程能 fork 不等于设备连上了。
+        # 真正的连接证据是第一条命令的回显——run() 收到结束标记才置 online。
+        # 之前这里直接置 online，设备关机时会短暂显示在线、白等一次 8 秒超时。
+        self.state = "init"
+        log("adb shell 进程已启动，等待握手 (%s)" % self.serial)
 
     def _kill(self) -> None:
         p, self.proc = self.proc, None
@@ -350,11 +494,40 @@ class Box:
     def connect(self) -> bool:
         """把 adb 传输层接上（盒子重启/换 IP 后需要）。"""
         try:
+            # 先看当前状态：残留在 offline / unauthorized 的传输层，
+            # 光 connect 是修不好的——adb 会回 "already connected"，然后继续连不上。
+            try:
+                devs = subprocess.run(["adb", "devices"], capture_output=True,
+                                      text=True, timeout=10).stdout
+                st = ""
+                for line in devs.splitlines()[1:]:
+                    parts = line.split()
+                    if parts and parts[0] == self.serial:
+                        st = parts[1] if len(parts) > 1 else ""
+                if st in ("offline", "unauthorized"):
+                    log("%s 残留状态 %s，先断开" % (self.serial, st))
+                    subprocess.run(["adb", "disconnect", self.serial],
+                                   capture_output=True, text=True, timeout=10)
+            except (subprocess.SubprocessError, OSError):
+                pass
             out = subprocess.run(["adb", "connect", self.serial],
                                  capture_output=True, text=True, timeout=12)
-            log("adb connect: %s" % (out.stdout or out.stderr).strip())
-            if "cannot" in (out.stdout + out.stderr).lower():
+            msg = (out.stdout or out.stderr).strip()
+            log("adb connect: %s" % msg)
+            # adb 的失败措辞有好几种：cannot connect / failed to connect /
+            # unable to connect / Connection refused / No route to host。
+            # 以前只认 "cannot"，其余全被当成功，白等一次 8 秒超时、还把状态
+            # 短暂标成在线（页面显示正常但按键全丢）。
+            low = msg.lower()
+            if any(w in low for w in ("cannot", "failed", "unable", "refused",
+                                      "no route", "10061", "10060")):
                 self.state = "offline"
+                self.last_err = msg
+                return False
+            # 最终以 adb devices 的传输层状态为准：只有 device 才算真连上
+            if not self._transport_ready():
+                self.state = "offline"
+                self.last_err = "传输层不是 device 状态"
                 return False
         except (subprocess.SubprocessError, OSError) as exc:
             self.state = "offline"
@@ -366,6 +539,10 @@ class Box:
         except RuntimeError:
             self.state = "offline"
             return False
+
+    def _transport_ready(self) -> bool:
+        """adb devices 里这台设备是否真的处于 device 状态（而不只是已登记）。"""
+        return _serial_online(self.serial)
 
     # ---------- 遥控动作 ----------
     def key(self, name: str, n: int = 1) -> None:
@@ -394,8 +571,8 @@ class Box:
         某个键一直按着 → 电视上就会出现"没人碰它、App 自己一个个弹出来"。
         """
         codes = sorted(set(LINUX_KEYS.values()))
-        chain = "".join("sendevent %s 1 %d 0; " % (INPUT_DEV, c) for c in codes)
-        chain += "sendevent %s 0 0 0; echo __REL__" % INPUT_DEV
+        chain = "".join("sendevent %s 1 %d 0; " % (self.input_dev, c) for c in codes)
+        chain += "sendevent %s 0 0 0; echo __REL__" % self.input_dev
         try:
             subprocess.run(["adb", "-s", self.serial, "shell", chain],
                            capture_output=True, text=True, timeout=10)
@@ -411,7 +588,7 @@ class Box:
         chain = "".join(
             "sendevent %s 1 %d 1; sendevent %s 0 0 0; "
             "sendevent %s 1 %d 0; sendevent %s 0 0 0; "
-            % (INPUT_DEV, code, INPUT_DEV, INPUT_DEV, code, INPUT_DEV)
+            % (self.input_dev, code, self.input_dev, self.input_dev, code, self.input_dev)
             for _ in range(n)
         )
         out = subprocess.run(["adb", "-s", self.serial, "shell", chain + "echo __EV__"],
@@ -459,13 +636,43 @@ class Box:
         return self._info
 
     def screencap(self) -> bytes:
-        os.makedirs(os.path.dirname(SHOT_RAW), exist_ok=True)
+        raw_path = os.path.join(BASE, "cache", "screen_raw_%s.png" % self.id)
+        out_path = os.path.join(BASE, "cache", "screen_%s.png" % self.id)
+        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
         t0 = time.time()
-        with _lock_stdout:
-            with open(SHOT_RAW, "wb") as fh:
-                subprocess.run(["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
-                               stdout=fh, timeout=30, check=True)
-        raw = open(SHOT_RAW, "rb").read()
+        raw = b""
+        # 快路径：exec-out（小米盒子 ~5s）。大眼橙 MT5862 上 exec-out 会被
+        # "Init wrapper" 之类的启动日志污染、还要 28s，所以配置里可以直接写
+        # "screencap": "pull" 跳过它；自动模式也会在失败后记住不再用。
+        if self.screencap_mode != "pull" and self.exec_out_ok:
+            try:
+                with _lock_stdout:
+                    with open(raw_path, "wb") as fh:
+                        subprocess.run(["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
+                                       stdout=fh, timeout=8, check=True)
+                raw = open(raw_path, "rb").read()
+                if not raw.startswith(b"\x89PNG"):
+                    self.exec_out_ok = False
+            except (subprocess.SubprocessError, OSError):
+                self.exec_out_ok = False
+                raw = b""
+        if not raw.startswith(b"\x89PNG"):
+            # 慢路径：设备上落盘再 pull（实测 1~2s，稳）
+            remote = "/sdcard/.tvremote_%s.png" % self.id
+            for attempt in (1, 2):
+                subprocess.run(["adb", "-s", self.serial, "shell", "screencap -p " + remote],
+                               capture_output=True, timeout=40)
+                if os.path.exists(raw_path):
+                    os.remove(raw_path)
+                subprocess.run(["adb", "-s", self.serial, "pull", remote, raw_path],
+                               capture_output=True, timeout=60)
+                raw = open(raw_path, "rb").read() if os.path.exists(raw_path) else b""
+                if raw.startswith(b"\x89PNG"):
+                    break
+                log("落盘截屏第 %d 次失败（%d 字节），重试" % (attempt, len(raw)))
+                time.sleep(0.8)
+            subprocess.run(["adb", "-s", self.serial, "shell", "rm -f " + remote],
+                           capture_output=True, timeout=20)
         if not raw.startswith(b"\x89PNG"):
             raise RuntimeError("截屏失败")
         out = raw
@@ -479,14 +686,72 @@ class Box:
             out = buf.getvalue()
         except Exception as exc:  # PIL 不可用时退回原 PNG
             log("缩图失败，直出 PNG: %s" % exc)
-        with open(SHOT_PATH, "wb") as fh:
+        with open(out_path, "wb") as fh:
             fh.write(out)
         log("截屏 %.1fs, %d KB" % (time.time() - t0, len(out) // 1024))
         return out
 
 
-BOX = Box(load_cfg())
-CFG = BOX.cfg
+def _norm_cfg(cfg: dict) -> dict:
+    """老配置（只有 serial/model）自动迁移成 devices 列表。"""
+    if not cfg.get("devices"):
+        cfg["devices"] = [{
+            "id": "mibox",
+            "label": "小米盒子",
+            "kind": "adb",
+            "serial": cfg.get("serial", "192.168.1.60:5555"),
+            "model": cfg.get("model", "MiBOX4"),
+            "input_dev": cfg.get("input_dev", "/dev/input/event0"),
+        }]
+    ids = [d["id"] for d in cfg["devices"] if d.get("kind", "adb") == "adb"]
+    if cfg.get("active") not in ids:
+        cfg["active"] = ids[0]
+    return cfg
+
+
+CFG = _norm_cfg(load_cfg())
+
+# 每台 adb 设备一条长驻 adb shell；切换时只换 BOX 指向，进程都留着（切回来是秒回）
+BOXES = {}
+for _d in CFG["devices"]:
+    if _d.get("kind", "adb") != "adb":
+        continue
+    _dcfg = dict(CFG)
+    _dcfg.update(_d)
+    BOXES[_d["id"]] = Box(_dcfg)
+
+BOX = BOXES[CFG["active"]]
+
+
+def set_active(dev_id: str) -> bool:
+    """切换当前控制的设备。切走前把旧设备的键全松开，防止卡键。"""
+    global BOX
+    if dev_id not in BOXES:
+        return False
+    if BOXES[dev_id] is not BOX:
+        try:
+            BOX.release_all()
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            pass
+    CFG["active"] = dev_id
+    BOX = BOXES[dev_id]
+    save_cfg(CFG)
+    log("切换设备 → %s (%s)" % (BOX.label, BOX.serial))
+    return True
+
+
+def apps_of(box) -> list:
+    return APPS_BY_ID.get(box.id, APPS_MIBOX)
+
+
+def app_name_of(box, pkg: str) -> str:
+    if not pkg:
+        return "—"
+    for a in apps_of(box):
+        if a["pkg"] == pkg:
+            return a["name"]
+    return pkg.split(".")[-1]
+
 
 # 三星电视（Tizen 8002 加密通道，第一次要在电视上点「允许」拿 token）
 try:
@@ -548,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/shot":
             return self.api_shot()
         if path == "/api/apps":
-            return self._json({"apps": APPS})
+            return self._json({"apps": apps_of(BOX), "device": BOX.id})
         if path == "/api/tv/status":
             return self._json({"ok": True, "ip": CFG.get("tv_ip", ""),
                                "tv": TV.info() if TV else {"state": "unavailable"}})
@@ -572,6 +837,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/connect":
                 ok = BOX.connect()
                 return self._json({"ok": ok}, 200 if ok else 503)
+            if path == "/api/switch":
+                dev = str(data.get("id", ""))
+                if not set_active(dev):
+                    raise ValueError("没有这个设备: %s" % (dev or "?"))
+                try:
+                    ok = BOX.connect()
+                except (RuntimeError, OSError, subprocess.SubprocessError):
+                    ok = False
+                return self._json({"ok": ok, "device": BOX.id,
+                                   "label": BOX.label, "model": BOX.cfg.get("model", ""),
+                                   "serial": BOX.serial})
             if path == "/api/discover":
                 found = discover_box(BOX.serial, BOX.cfg.get("model", ""))
                 if found:
@@ -604,12 +880,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_status(self):
         t0 = time.time()
         online = BOX.state == "online"
-        try:
-            BOX.run("echo ok", timeout=6)   # 轻量心跳，量的是桥接真实往返
-            online = True
-        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            online = False
-            BOX.last_err = str(exc)
+        if online:
+            # 只在自认为在线时才做心跳；设备关着的时候别让页面等 20 秒
+            try:
+                BOX.run("echo ok", timeout=6)
+                online = True
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                online = False
+                BOX.last_err = str(exc)
         pkg = BOX.focus_cache[0] if online else ""
         model = ""
         if online:
@@ -617,16 +895,26 @@ class Handler(BaseHTTPRequestHandler):
                 model = BOX.info().get("model", "")
             except RuntimeError:
                 pass
+        devices = [{
+            "id": b.id,
+            "label": b.label,
+            "model": b.cfg.get("model", ""),
+            "serial": b.serial,
+            "online": b.state == "online",
+        } for b in BOXES.values()]
         self._json({
             "online": online,
             "model": model,
             "serial": BOX.serial,
+            "device": BOX.id,
+            "device_label": BOX.label,
+            "devices": devices,
             "latency_ms": int((time.time() - t0) * 1000),
             "key_ms": BOX.last_key_ms,
             "current_pkg": pkg,
-            "current_name": APP_NAME.get(pkg, pkg.split(".")[-1] if pkg else "—"),
-            "error": "" if online else (BOX.last_err or "盒子未连接"),
-            "apps": APPS,
+            "current_name": app_name_of(BOX, pkg),
+            "error": "" if online else (BOX.last_err or "设备未连接"),
+            "apps": apps_of(BOX),
         })
 
     def api_shot(self):
@@ -677,18 +965,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    cfg = load_cfg()
+    cfg = CFG
     os.makedirs(os.path.join(BASE, "cache"), exist_ok=True)
-    log("启动桥接: %s:%s → %s" % (cfg["bind"], cfg["port"], cfg["serial"]))
+    log("启动桥接: %s:%s → %s" % (cfg["bind"], cfg["port"],
+                                 ", ".join("%s=%s" % (b.label, b.serial) for b in BOXES.values())))
     # 先把 HTTP 服务挂上（connect 可能要等十几秒，别让页面打不开）
     srv = ThreadingHTTPServer((cfg["bind"], int(cfg["port"])), Handler)
     srv.daemon_threads = True
 
     def _boot_connect() -> None:
-        if BOX.connect():
-            BOX.release_all()      # 启动时先把所有键松开，防止上一次异常退出留下卡键
-        else:
-            log("首次连接失败，后台会自动重试/找盒子")
+        for b in BOXES.values():
+            try:
+                if b.connect():
+                    b.release_all()   # 启动时先把所有键松开，防上次异常退出留下卡键
+                else:
+                    log("%s 首次连接失败，后台会自动重试/找设备" % b.label)
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                log("%s 连接异常: %s" % (b.label, exc))
 
     threading.Thread(target=_boot_connect, daemon=True).start()
     try:

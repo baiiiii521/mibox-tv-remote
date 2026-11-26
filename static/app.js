@@ -15,7 +15,11 @@
   let appsRendered = false;
   let errShownAt = 0;
   let lastPkg = '';
+  let currentDevice = '';    // 服务端此刻真正在控的设备 id
+  let currentMode = 'mibox'; // 页面选中的页签（可能是 tv）
   let pollTimer = null;
+  let switchSeq = 0;         // 切页签/切设备时自增：在飞的旧状态响应一律作废
+  let pendingSwitch = null;  // 切换中的 Promise：按键必须等它落定，否则会打到上一台
 
   /* ---------------- toast ---------------- */
   let toastTimer;
@@ -50,14 +54,16 @@
     const now = Date.now();
     if (now - errShownAt < 2500) return;
     errShownAt = now;
-    toast(err && err.name === 'AbortError' ? '电视盒子没有响应' : (err.message || '操作失败'), true);
+    toast(err && err.name === 'AbortError' ? '设备没有响应' : (err.message || '操作失败'), true);
     refresh();
   }
 
   async function sendKey(key, n = 1) {
     try {
+      // 刚点了别的设备、切换还没落定时，先等它：不然这一下会发给上一台
+      if (pendingSwitch) await pendingSwitch;
       await api('/api/key', { key, n }, 9000);
-      setOnline(true);
+      if (currentMode !== 'tv') setOnline(true);
     } catch (e) {
       setOnline(false);
       reportError(e);
@@ -116,6 +122,7 @@
     else bindTap(el, fire);
   }
 
+  // 顶部电源键不在这里绑：它要按当前页签决定发给盒子还是电视，见文件末尾
   $$('[data-key]').forEach(el => {
     const key = el.dataset.key;
     bindButton(el, () => sendKey(key));
@@ -124,6 +131,7 @@
   /* ---------------- 状态 ---------------- */
   function setOnline(ok) {
     online = ok;
+    if (currentMode === 'tv') return;   // 电视那档由 paintTv 自己画，别让盒子状态盖掉
     dot.classList.toggle('on', ok);
     dot.classList.toggle('off', !ok);
     banner.hidden = ok;
@@ -131,7 +139,15 @@
   }
 
   function setStatus(s) {
-    if (s.model) devName.textContent = s.model;
+    if (currentMode === 'tv') return;                 // 电视模式：顶部归电视管
+    if (s.device && s.device !== currentMode) return; // 服务端还停在别的设备：这一条是过期的
+    if (s.device && s.device !== currentDevice) {
+      currentDevice = s.device;      // 服务端换了设备：应用列表要重画
+      appsRendered = false;
+      lastPkg = '';
+    }
+    if (!s.online) banner.textContent = (s.device_label || '设备') + ' 未连接 · 点这里重连';
+    devName.textContent = s.model || s.device_label || devName.textContent;
     setOnline(!!s.online);
     if (s.online) {
       const ms = s.key_ms || s.latency_ms || 0;
@@ -158,12 +174,27 @@
   }
 
   async function refresh() {
+    // 电视模式不轮询盒子：轮询回来的旧模型会把顶部标题刷成盒子（这就是那个
+    // "切到电视还显示盒子" 的 bug）
+    if (currentMode === 'tv') {
+      scheduleNext(10000);
+      return refreshTv();
+    }
+    const seq = ++switchSeq;
     let delay = 6000;
     try {
       const s = await api('/api/status', undefined, 9000);
-      setStatus(s);
-      delay = s.online ? 6000 : 3000;
+      if (seq !== switchSeq) return;               // 已有更新的一轮在飞，它会负责排下一轮
+      if (currentMode === 'tv') return;
+      if (s.device && s.device !== currentMode) {
+        delay = 1200;                              // 服务端还没跟上：马上再问一次
+      } else {
+        setStatus(s);
+        delay = s.online ? 6000 : 3000;
+      }
     } catch (e) {
+      if (seq !== switchSeq) return;
+      if (currentMode === 'tv') return;
       setOnline(false);
       devStatus.textContent = '桥接服务未响应';
       delay = 3000;
@@ -172,6 +203,7 @@
   }
 
   async function reconnect() {
+    if (currentMode === 'tv') return refreshTv();
     devStatus.textContent = '正在重连…';
     try {
       await api('/api/connect', {}, 20000);
@@ -179,16 +211,19 @@
     } catch (e) {
       try {
         const d = await api('/api/discover', {}, 40000);
-        toast(d.found ? '盒子换地址了，已找到 ' + d.found : '没找到盒子，检查电视是否开机', !d.found);
+        toast(d.found ? '设备换地址了，已找到 ' + d.found : '没找到设备，检查是否开机', !d.found);
       } catch (e2) {
-        toast('重连失败，电视可能关机了', true);
+        toast('重连失败，设备可能关机了', true);
       }
     }
     refresh();
   }
 
-  $('#device').addEventListener('click', () => { if (!online) reconnect(); });
-  banner.addEventListener('click', reconnect);
+  $('#device').addEventListener('click', () => {
+    if (currentMode === 'tv') refreshTv();
+    else if (!online) reconnect();
+  });
+  banner.addEventListener('click', () => reconnect());
 
   /* ---------------- 应用 ---------------- */
   function renderApps(apps) {
@@ -202,6 +237,7 @@
         '<span class="nm">' + app.name + '</span>';
       bindButton(btn, async () => {
         try {
+          if (pendingSwitch) await pendingSwitch;
           await api('/api/app', { pkg: app.pkg }, 15000);
           toast('打开 ' + app.name);
           setTimeout(refresh, 1200);
@@ -223,7 +259,7 @@
     }
     try {
       await api('/api/text', { text });
-      toast('已输入到电视');
+      toast('已输入到设备');
       input.value = '';
       input.blur();
     } catch (e) { reportError(e); }
@@ -296,13 +332,11 @@
   });
   window.addEventListener('online', refresh);
 
-  /* ---------------- 盒子 / 电视 双模式 ---------------- */
+  /* ---------------- 盒子 / 投影仪 / 电视 三档 ---------------- */
   const mainEl = $('main');
   Array.from(mainEl.children).forEach(el => {
     if (el.id !== 'modes') el.classList.add('box-only');
   });
-
-  const VIDEO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9.5h3.5L12.5 5v14L7.5 14.5H5z"/></svg>';
 
   const tvPanel = document.createElement('div');
   tvPanel.className = 'tv-only off';
@@ -349,6 +383,12 @@
     } else {
       tvHint.textContent = '三星 UA55RU7200 · 未连接（点这里配对）' + (err ? '：' + err : '');
     }
+    if (currentMode !== 'tv') return;      // 电视档没选中时不动顶部
+    devName.textContent = '三星电视';
+    dot.classList.toggle('on', tvPaired);
+    dot.classList.toggle('off', !tvPaired);
+    devStatus.textContent = tvPaired ? '已连接'
+      : (state === 'pairing' ? '等待电视确认…' : '未连接');
   }
 
   async function refreshTv() {
@@ -357,6 +397,7 @@
       paintTv((s.tv && s.tv.state) || 'idle', s.tv && s.tv.error);
     } catch (e) {
       tvHint.textContent = '桥接服务未响应';
+      if (currentMode === 'tv') devStatus.textContent = '桥接服务未响应';
     }
   }
 
@@ -392,21 +433,108 @@
     }
   });
 
-  function setMode(mode) {
-    document.body.dataset.mode = mode;
-    $$('.box-only').forEach(el => el.classList.toggle('off', mode !== 'box'));
-    $$('.tv-only').forEach(el => el.classList.toggle('off', mode !== 'tv'));
+  /* ---------------- 页签切换 ---------------- */
+  const MODES = { mibox: 'mibox', projector: 'projector', tv: 'tv' };
+
+  function labelOf(id) {
+    const b = $('.mode[data-mode="' + id + '"]');
+    return b ? b.textContent.trim() : id;
+  }
+
+  // 只改界面，不发请求
+  function applyMode(mode) {
+    if (!MODES[mode]) mode = 'mibox';
+    currentMode = mode;
+    switchSeq++;               // 作废在飞的状态响应：切走前发出的那条不能再画回来
+    const visual = mode === 'tv' ? 'tv' : 'box';
+    document.body.dataset.mode = visual;
+    $$('.box-only').forEach(el => el.classList.toggle('off', visual !== 'box'));
+    $$('.tv-only').forEach(el => el.classList.toggle('off', visual !== 'tv'));
     $$('.mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
     try { localStorage.setItem('tvremote.mode', mode); } catch (e) {}
-    if (mode === 'tv') refreshTv(); else refresh();
+    $('#btnShot').classList.toggle('off', mode === 'tv');   // 电视截不了图，别让它拍到盒子
+    if (mode === 'tv') {
+      devName.textContent = '三星电视';
+      devStatus.textContent = '遥控电视';
+      dot.classList.remove('on', 'off');
+      banner.hidden = true;
+      refreshTv();
+      return;
+    }
+    devName.textContent = labelOf(mode);
+    devStatus.textContent = (mode === currentDevice) ? '连接中…' : '正在切换…';
+  }
+
+  async function switchDevice(id, silent) {
+    // 串行化：连点两个设备时按顺序生效，不会出现后发的请求先到、再被前一条翻回去
+    const prev = pendingSwitch;
+    const p = (async () => {
+      if (prev) { try { await prev; } catch (e) {} }
+      try {
+        return await api('/api/switch', { id }, 20000);
+      } catch (e) {
+        return { ok: false, device: id, error: e.message || '切换失败' };
+      }
+    })();
+    pendingSwitch = p;
+    const r = await p;
+    if (pendingSwitch === p) pendingSwitch = null;
+
+    if (r.error) {
+      if (!silent) toast('切换失败：' + r.error, true);
+      currentDevice = '';
+      refresh();
+      return;
+    }
+    currentDevice = r.device || id;
+    appsRendered = false;
+    lastPkg = '';
+    if (!silent) {
+      const label = r.label || labelOf(id);
+      toast(r.ok ? '已切到' + label : label + ' 没连上，先开机', !r.ok);
+    }
+    if (currentMode === currentDevice) refresh();
+  }
+
+  function setMode(mode, silent) {
+    if (!MODES[mode]) mode = 'mibox';
+    applyMode(mode);
+    if (mode === 'tv') {
+      scheduleNext(10000);
+      return;
+    }
+    if (mode !== currentDevice) switchDevice(mode, silent);
+    else refresh();
   }
 
   $$('.mode').forEach(btn => {
     btn.addEventListener('click', () => setMode(btn.dataset.mode));
   });
-  let savedMode = 'box';
-  try { savedMode = localStorage.getItem('tvremote.mode') || 'box'; } catch (e) {}
-  setMode(savedMode);
 
-  refresh();
+  // 顶部电源键：跟着当前页签走 —— 电视档发三星的 POWER，盒子/投影仪档发 adb 的 POWER
+  bindTap($('#btnPower'), () => {
+    if (currentMode === 'tv') sendTvKey('POWER');
+    else sendKey('POWER');
+  });
+
+  /* ---------------- 启动 ----------------
+     首屏以服务端当前设备为准；localStorage 只决定要不要进电视档，
+     绝不拿它去反向切服务器的设备（旧版会在打开页面时偷偷把设备切回去）。 */
+  let savedMode = 'mibox';
+  try { savedMode = localStorage.getItem('tvremote.mode') || 'mibox'; } catch (e) {}
+  if (savedMode === 'box') savedMode = 'mibox';     // 老版本存的值
+
+  (async function boot() {
+    let s = null;
+    try { s = await api('/api/status', undefined, 9000); } catch (e) {}
+    currentDevice = (s && s.device) || (savedMode === 'tv' ? 'mibox' : savedMode);
+    if (savedMode === 'tv') {
+      applyMode('tv');
+      scheduleNext(10000);
+      return;
+    }
+    applyMode(currentDevice);
+    if (s) setStatus(s);
+    scheduleNext(s && s.online ? 6000 : 3000);
+  })();
 })();

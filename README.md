@@ -116,21 +116,48 @@ bash install.sh                       # macOS LaunchAgent / Linux systemd，开�
 
 ---
 
+## 多设备：盒子 + 投影仪 + 电视
+
+一个页面同时管几台 adb 设备（电视盒子、投影仪、开发板…），顶上三个页签一点就切：
+
+- 每台设备各有一条长驻 `adb shell`，切换只改指针，**切回来是秒回**，不用重新连接。
+- 切走前会先把旧设备的键全部补一个 up，防止卡键（不然会出现"没人碰它、App 自己弹出来"）。
+- 页签只决定发去哪台；`config.json` 里的 `active` 记录当前设备，重启桥接后保持不变。
+- 三星电视走独立的 Tizen 通道，不占 adb 槽位。
+
+页面上顶部的电源键**跟着页签走**：电视档发三星的 `POWER`，盒子/投影仪档发对应设备的 `POWER`。
+
+加一台设备只要在 `config.json` 的 `devices` 里加一项，重启桥接即可。
+
+---
+
 ## 配置说明
 
 `config.json`：
 
 | 字段 | 说明 |
 |---|---|
-| `serial` | 盒子 adb 地址，如 `192.168.1.100:5555` |
+| `devices[]` | 要控制的 adb 设备，一台一个对象（字段见下表） |
+| `active` | 当前设备 id，页面上点页签会写回这里 |
 | `bind` / `port` | 监听地址和端口，默认 `0.0.0.0:8795` |
-| `model` | 盒子型号，用于 IP 变化时自动识别（`getprop ro.product.model`） |
 | `tv_ip` / `tv_port` | 三星电视地址，默认 8002；不用电视留空即可 |
 | `tv_token` | 配对后自动写入，别手改 |
 
-盒子 **IP 变了也不用管**：连不上时会扫一遍网段找开着 5555 的主机，认机型对上就自动改配置。
+`devices[]` 每一项：
 
-应用快捷入口在 `server.py` 顶部的 `APPS` 列表里改：
+| 字段 | 说明 |
+|---|---|
+| `id` | 唯一 id，页签和 `active` 都用它 |
+| `label` | 页面上显示的名字（小米盒子 / 投影仪…） |
+| `serial` | adb 地址，如 `192.168.1.100:5555` |
+| `model` | 机型，IP 变了靠它自动认回来（`getprop ro.product.model`） |
+| `input_dev` | 按键注入的输入设备，一般 `/dev/input/event0` |
+| `screencap` | 可选。`pull` = 用 `screencap -p` + `adb pull` 截屏，给 `exec-out` 坏掉的设备（不少投影仪/老固件如此） |
+
+设备 **IP 变了也不用管**：连不上时会扫一遍网段找开着 5555 的主机，认机型对上就自动改配置。
+想彻底不折腾，就在路由器里给每台设备按 MAC 做一条 DHCP 固定地址。
+
+应用快捷入口按设备分开，在 `server.py` 顶部 `APPS_BY_ID` 里改（`mibox` / `projector` 各一份）。
 
 ```bash
 adb shell pm list packages -3          # 查你盒子上的第三方应用包名
@@ -143,7 +170,8 @@ adb shell dumpsys window | grep mCurrentFocus   # 查当前前台应用
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/status` | 盒子在线状态、当前前台应用、按键耗时 |
+| GET | `/api/status` | 当前设备在线状态、前台应用、按键耗时，`devices` 里带每台的在线情况 |
+| POST | `/api/switch` | `{"id":"projector"}` 切换当前设备（会顺带 connect 一次） |
 | POST | `/api/key` | `{"key":"UP","n":1}` 发按键（`n` 为连发次数） |
 | POST | `/api/app` | `{"pkg":"com.example.tv"}` 启动应用 |
 | POST | `/api/text` | `{"text":"hello"}` 输入文字（仅 ASCII） |
@@ -221,7 +249,9 @@ adb shell dumpsys deviceidle whitelist +com.termux
 ## 已知限制
 
 - **盒子侧**：`input text` 只支持 ASCII，中文输入需要额外装输入法；截屏在 Android 6 上要 2–6 秒
-- **电视侧**：只支持三星 Tizen（2016 年及以后）；其他品牌需要各自协议
+- **投影仪/老固件**：`adb exec-out screencap` 可能直接是坏的（输出被启动日志污染、要十几秒），这时配 `"screencap": "pull"`；pull 本身也要 3–15 秒，页面首张截图偶尔失败，重试即可
+- **页签切换**：`/api/status` 有 6 秒轮询，前端必须按 `device` 字段过滤过期响应，否则切完页签标题会被旧设备刷回去；电视档干脆不要轮询 adb 设备
+- **电视侧**：只支持三星 Tizen（2016 年及以后）；其他品牌需要各自协议。电视**完全待机**时 WebSocket 是断的，遥控唤不醒，要开机得另做局域唤醒（WoL）
 - **安全**：默认没有任何鉴权，局域网内谁都能控制。自己家 Wi-Fi 可以用；如果是共享网络，建议加访问码或只监听 `127.0.0.1` 配合反代
 - 安卓盒子必须开着「网络调试」，这个开关重启后可能自己关掉
 
@@ -241,7 +271,10 @@ Run one Python file (stdlib only) on any always-on LAN machine, then open the pr
 
 - **Android TV box** via ADB: D-pad, OK, back, home, volume, app shortcuts, screenshots, ASCII text input.
   Keys are injected straight into `/dev/input/event0` (~0.3s) instead of shelling out to `input keyevent` (~1.3s).
+- **Multiple ADB devices** (TV box, projector, anything with `adbd`): one tab per device, each keeps its own
+  persistent shell, switching is instant and never leaves a key stuck down.
 - **Samsung TV** via the Tizen LAN WebSocket API on port 8002 (TLS, self-signed): volume, mute, source, home, power.
+  The header power button follows the selected tab — TV tab sends the TV's `POWER`, box tabs send adb `POWER`.
 
 No app, no root, no cloud. Everything stays inside your LAN.
 

@@ -1,9 +1,27 @@
 {
-  "serial": "192.168.1.100:5555",
   "bind": "0.0.0.0",
   "port": 8795,
-  "model": "MiBOX4",
-  "tv_ip": "192.168.1.101",
+  "active": "mibox",
+  "devices": [
+    {
+      "id": "mibox",
+      "label": "小米盒子",
+      "kind": "adb",
+      "serial": "192.168.1.100:5555",
+      "model": "MiBOX4",
+      "input_dev": "/dev/input/event0"
+    },
+    {
+      "id": "projector",
+      "label": "投影仪",
+      "kind": "adb",
+      "serial": "192.168.1.101:5555",
+      "model": "OBE_C3Air",
+      "input_dev": "/dev/input/event0",
+      "screencap": "pull"
+    }
+  ],
+  "tv_ip": "192.168.1.102",
   "tv_port": 8002,
   "tv_token": ""
 }
