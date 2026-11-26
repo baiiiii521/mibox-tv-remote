@@ -34,6 +34,50 @@ for _i in range(10):
     TV_KEYS["NUM_%d" % _i] = "KEY_%d" % _i
 
 
+def wake_on_lan(mac: str, ip: str = "", rounds: int = 6) -> None:
+    """发 WoL 魔术包（6×FF + 16×MAC）。
+
+    电视在待机时 IP 栈是关的，ARP 里没有它，单播发不进去，必须走广播；
+    所以同时发 255.255.255.255 和本网段广播（192.168.1.255），端口 9 和 7。
+    Android/Termux 对 255.255.255.255 有时会丢，网段广播更可靠。
+    """
+    clean = (mac or "").replace("-", ":").replace(".", "").strip()
+    parts = clean.split(":")
+    if len(parts) != 6 or any(len(p) != 2 for p in parts):
+        raise ValueError("MAC 格式不对: %r" % mac)
+    macb = bytes(int(p, 16) for p in parts)
+    pkt = b"\xff" * 6 + macb * 16
+
+    targets = {("255.255.255.255", 9), ("255.255.255.255", 7)}
+    if ip:
+        targets.add((ip.rsplit(".", 1)[0] + ".255", 9))
+        targets.add((ip.rsplit(".", 1)[0] + ".255", 7))
+        targets.add((ip, 9))          # 有的固件也认单播
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        for _ in range(rounds):
+            for host, port in targets:
+                try:
+                    sock.sendto(pkt, (host, port))
+                except OSError:
+                    pass
+            time.sleep(0.2)
+    finally:
+        sock.close()
+
+
+def _port_open(ip: str, port: int, timeout: float = 1.0) -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex((ip, port)) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 class WSClient:
     """够用就好的 WebSocket 客户端（只处理这些电视用到的帧类型）。"""
 
@@ -140,8 +184,10 @@ class WSClient:
 
 
 class SamsungTV:
-    def __init__(self, ip: str, token: str = "", name: str = "HermesRemote", port: int = 8002):
+    def __init__(self, ip: str, token: str = "", name: str = "HermesRemote", port: int = 8002,
+                 mac: str = ""):
         self.ip, self.token, self.port = ip, token, port
+        self.mac = (mac or "").strip()
         self.secure = port == 8002
         self.name = name
         self.ws = None
@@ -199,6 +245,34 @@ class SamsungTV:
             return self.ws is not None and self.ws.sock.fileno() != -1
         except OSError:
             return False
+
+    def is_reachable(self) -> bool:
+        """8002 端口通不通 —— 电视待机时这条就是断的（ping 也不通）。"""
+        return _port_open(self.ip, self.port, 0.8)
+
+    def wake(self, wait: float = 30.0) -> bool:
+        """发 WoL 把待机电视叫醒，等它 8002 起来后自动重连（token 还在，不用重新配对）。
+
+        前提：电视里「设置 → 常规 → 网络 → 专家设置」的
+        「通过手机开机 / Power On with Mobile」和「IP 遥控 / IP Remote」都打开，
+        否则电视待机会把网卡整个断掉，魔术包没人收。
+        """
+        if not self.mac:
+            self.last_error = "没配电视 MAC（config.json 里的 tv_mac）"
+            raise RuntimeError(self.last_error)
+        if self.is_reachable():
+            return self.connect(wait=15)
+        wake_on_lan(self.mac, self.ip)
+        deadline = time.time() + max(5.0, wait)
+        while time.time() < deadline:
+            if self.is_reachable():
+                time.sleep(1.2)          # 端口刚开时服务还没就绪
+                if self.connect(wait=20):
+                    return True
+            time.sleep(1.0)
+        self.state = "error"
+        self.last_error = "唤醒包已发，但电视没起来（检查电视的网络待机设置）"
+        return False
 
     def key(self, name: str) -> None:
         code = TV_KEYS.get(name)

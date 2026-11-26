@@ -371,8 +371,10 @@
 
   const tvHint = $('#tvHint');
   let tvPaired = false;
+  let tvState = 'idle';
 
   function paintTv(state, err) {
+    tvState = state;
     tvPaired = state === 'paired';
     if (tvPaired) {
       tvHint.textContent = '三星 UA55RU7200 · 已连接';
@@ -381,7 +383,8 @@
     } else if (state === 'unavailable') {
       tvHint.textContent = '电视模块不可用';
     } else {
-      tvHint.textContent = '三星 UA55RU7200 · 未连接（点这里配对）' + (err ? '：' + err : '');
+      const what = state === 'error' ? '未连接（点这里唤醒 / 配对）' : '未连接（点这里配对）';
+      tvHint.textContent = '三星 UA55RU7200 · ' + what + (err ? '：' + err : '');
     }
     if (currentMode !== 'tv') return;      // 电视档没选中时不动顶部
     devName.textContent = '三星电视';
@@ -402,17 +405,42 @@
   }
 
   async function sendTvKey(key) {
+    const isPower = key === 'POWER';
+    if (isPower && currentMode === 'tv') devStatus.textContent = '正在开/关电视…';
     try {
-      await api('/api/tv/key', { key }, 12000);
-      if (!tvPaired) paintTv('paired');
+      // 电源键可能要先唤醒电视，服务端最多等 30 秒
+      const r = await api('/api/tv/key', { key }, isPower ? 45000 : 12000);
+      if (r && r.woke) {
+        paintTv('paired');
+        toast('电视已开机');
+      } else if (!tvPaired) {
+        paintTv('paired');
+      }
     } catch (e) {
       const msg = (e && e.message) || '';
-      if (/未连接|拒绝|连接/.test(msg)) {
+      if (isPower && /唤醒|MAC|没起来/.test(msg)) {
+        toast('没唤醒：' + msg, true);
+        paintTv('error', msg);
+      } else if (/未连接|拒绝|连接/.test(msg)) {
         toast('电视没连上，点下面那行字重新配对', true);
         paintTv('idle', msg);
       } else {
         toast('电视没有响应', true);
       }
+    }
+    if (isPower && currentMode === 'tv') refreshTv();
+  }
+
+  async function wakeTv() {
+    tvHint.textContent = '正在唤醒电视… 最多 30 秒';
+    if (currentMode === 'tv') devStatus.textContent = '正在唤醒…';
+    try {
+      const r = await api('/api/tv/wake', {}, 45000);
+      paintTv(r.ok ? 'paired' : 'error', r.error);
+      toast(r.ok ? '电视醒了' : '没唤醒：' + (r.error || '检查电视的网络待机设置'), !r.ok);
+    } catch (e) {
+      paintTv('error', e.message);
+      toast('唤醒失败：' + (e.message || ''), true);
     }
   }
 
@@ -422,6 +450,7 @@
 
   tvHint.addEventListener('click', async () => {
     if (tvPaired) return;
+    if (tvState === 'error') return wakeTv();   // 待机（网络断了）：先唤醒，再配对
     tvHint.textContent = '正在连电视… 电视上会弹窗，用三星遥控器点「允许」';
     try {
       const r = await api('/api/tv/pair', {}, 95000);

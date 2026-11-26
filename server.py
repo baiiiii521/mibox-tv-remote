@@ -57,6 +57,7 @@ DEFAULT_CFG = {
     "tv_ip": "192.168.1.61",
     "tv_port": 8002,
     "tv_token": "",
+    "tv_mac": "",
 }
 
 # Android keycode 映射（KEYCODE_*）—— 慢路径：`input keyevent`，每次约 1.3s
@@ -757,7 +758,7 @@ def app_name_of(box, pkg: str) -> str:
 try:
     from samsung import SamsungTV
     TV = SamsungTV(CFG.get("tv_ip", ""), CFG.get("tv_token", ""),
-                   port=int(CFG.get("tv_port", 8002)))
+                   port=int(CFG.get("tv_port", 8002)), mac=CFG.get("tv_mac", ""))
     TV.start_keepalive()
 except Exception as _exc:          # 没装/没配置也不影响盒子遥控
     TV = None
@@ -859,9 +860,24 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/tv/key":
                 if TV is None:
                     raise ValueError("电视模块不可用")
-                TV.key(str(data.get("key", "")))
+                key = str(data.get("key", ""))
+                # 电视待机时网络整个断了：电源键的语义应该是「唤醒」，而不是报错
+                if key == "POWER" and not TV.is_reachable():
+                    ok = TV.wake(wait=float(data.get("wait") or 30))
+                    tv_save_token()
+                    return self._json({"ok": ok, "woke": ok,
+                                       "error": "" if ok else TV.last_error},
+                                      200 if ok else 503)
+                TV.key(key)
                 tv_save_token()
                 return self._json({"ok": True})
+            if path == "/api/tv/wake":
+                if TV is None:
+                    raise ValueError("电视模块不可用")
+                ok = TV.wake(wait=float(data.get("wait") or 30))
+                tv_save_token()
+                return self._json({"ok": ok, "error": "" if ok else TV.last_error},
+                                  200 if ok else 503)
             if path == "/api/tv/pair":
                 if TV is None:
                     raise ValueError("电视模块不可用")

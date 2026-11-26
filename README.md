@@ -142,6 +142,7 @@ bash install.sh                       # macOS LaunchAgent / Linux systemd，开�
 | `bind` / `port` | 监听地址和端口，默认 `0.0.0.0:8795` |
 | `tv_ip` / `tv_port` | 三星电视地址，默认 8002；不用电视留空即可 |
 | `tv_token` | 配对后自动写入，别手改 |
+| `tv_mac` | 电视的 MAC 地址，待机唤醒（WoL）用；在电视「支持 → 关于此电视」里看 |
 
 `devices[]` 每一项：
 
@@ -179,7 +180,8 @@ adb shell dumpsys window | grep mCurrentFocus   # 查当前前台应用
 | POST | `/api/connect` | 重连盒子 |
 | POST | `/api/discover` | 扫描局域网重新找盒子 |
 | GET | `/api/tv/status` | 电视连接状态 |
-| POST | `/api/tv/key` | `{"key":"VOL_UP"}` 电视按键 |
+| POST | `/api/tv/key` | `{"key":"VOL_UP"}` 电视按键；`POWER` 在电视待机时自动先发 WoL |
+| POST | `/api/tv/wake` | 只发 WoL 唤醒电视（等它起来后自动重连） |
 | POST | `/api/tv/pair` | 首次配对（电视上点「允许」） |
 
 ---
@@ -244,6 +246,29 @@ adb shell dumpsys deviceidle whitelist +com.termux
 
 > 电视待机太久或断电重启可能导致 token 失效，按键没反应时重新点一次配对即可。
 
+### 从待机唤醒（WoL）
+
+电视待机时会把网络整个断掉（连 ping 都不通），8002 自然也连不上。桥接的处理是：
+**电源键按下时先探一下 8002** —— 不通就发 WoL 魔术包（255.255.255.255 和网段广播都发，端口 9/7），
+然后每秒探一次 8002，最多等 30 秒，起来后用旧 token 自动重连，不用重新配对。
+
+**电视上要打开两个开关**（设一次就行）：
+
+- 设置 → 常规（部分机型是「连接」）→ 网络 → 专家设置 → **通过手机开机 / Power On with Mobile** → 开
+- 同一页的 **IP 遥控 / IP Remote** → 开
+
+否则电视待机后网卡是断电的，魔术包没人收。部分老机型只认有线 WoL，
+Wi-Fi 唤不醒就插一根网线到路由器，并把电视的 IP 也在路由器里固定住。
+
+`config.json` 里填电视 MAC（电视里：设置 → 支持 → 关于此电视）：
+
+```json
+"tv_mac": "AA:BB:CC:DD:EE:FF"
+```
+
+单独测试唤醒：`curl -X POST http://<桥接IP>:8795/api/tv/wake -d '{"wait":30}'`，
+返回 `{"ok":true}` 就说明电视真的起来了。
+
 ---
 
 ## 已知限制
@@ -251,7 +276,7 @@ adb shell dumpsys deviceidle whitelist +com.termux
 - **盒子侧**：`input text` 只支持 ASCII，中文输入需要额外装输入法；截屏在 Android 6 上要 2–6 秒
 - **投影仪/老固件**：`adb exec-out screencap` 可能直接是坏的（输出被启动日志污染、要十几秒），这时配 `"screencap": "pull"`；pull 本身也要 3–15 秒，页面首张截图偶尔失败，重试即可
 - **页签切换**：`/api/status` 有 6 秒轮询，前端必须按 `device` 字段过滤过期响应，否则切完页签标题会被旧设备刷回去；电视档干脆不要轮询 adb 设备
-- **电视侧**：只支持三星 Tizen（2016 年及以后）；其他品牌需要各自协议。电视**完全待机**时 WebSocket 是断的，遥控唤不醒，要开机得另做局域唤醒（WoL）
+- **电视侧**：只支持三星 Tizen（2016 年及以后）；其他品牌需要各自协议。待机唤醒要电视里开「通过手机开机」+「IP 遥控」，个别机型只支持有线 WoL
 - **安全**：默认没有任何鉴权，局域网内谁都能控制。自己家 Wi-Fi 可以用；如果是共享网络，建议加访问码或只监听 `127.0.0.1` 配合反代
 - 安卓盒子必须开着「网络调试」，这个开关重启后可能自己关掉
 
@@ -275,6 +300,8 @@ Run one Python file (stdlib only) on any always-on LAN machine, then open the pr
   persistent shell, switching is instant and never leaves a key stuck down.
 - **Samsung TV** via the Tizen LAN WebSocket API on port 8002 (TLS, self-signed): volume, mute, source, home, power.
   The header power button follows the selected tab — TV tab sends the TV's `POWER`, box tabs send adb `POWER`.
+  When the TV is in standby its network stack is off, so `POWER` first sends a Wake-on-LAN magic packet
+  (enable **Power On with Mobile** + **IP Remote** in the TV's network settings) and reconnects with the saved token.
 
 No app, no root, no cloud. Everything stays inside your LAN.
 
