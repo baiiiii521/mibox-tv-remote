@@ -126,6 +126,7 @@ bash install.sh                       # macOS LaunchAgent / Linux systemd，开�
 - 三星电视走独立的 Tizen 通道，不占 adb 槽位。
 
 页面上顶部的电源键**跟着页签走**：电视档发三星的 `POWER`，盒子/投影仪档发对应设备的 `POWER`。
+对 `power_mode: "sleep"` 的设备（不少投影仪就是），按下会**先弹确认**——这类设备休眠后会断网、且通常不吃 WoL，等于只能用它自己的遥控器再开。
 
 加一台设备只要在 `config.json` 的 `devices` 里加一项，重启桥接即可。
 
@@ -154,6 +155,7 @@ bash install.sh                       # macOS LaunchAgent / Linux systemd，开�
 | `model` | 机型，IP 变了靠它自动认回来（`getprop ro.product.model`） |
 | `input_dev` | 按键注入的输入设备，一般 `/dev/input/event0` |
 | `screencap` | 可选。`pull` = 用 `screencap -p` + `adb pull` 截屏，给 `exec-out` 坏掉的设备（不少投影仪/老固件如此） |
+| `power_mode` | 可选，默认 `power`（发 KEYCODE_POWER）。填 `sleep` 表示这台不认注入的电源键、只能发 KEYCODE_SLEEP；前端会先弹确认，因为休眠通常会断网、远程开不回来 |
 
 设备 **IP 变了也不用管**：连不上时会扫一遍网段找开着 5555 的主机，认机型对上就自动改配置。
 想彻底不折腾，就在路由器里给每台设备按 MAC 做一条 DHCP 固定地址。
@@ -277,6 +279,7 @@ Wi-Fi 唤不醒就插一根网线到路由器，并把电视的 IP 也在路由�
 - **投影仪/老固件**：`adb exec-out screencap` 可能直接是坏的（输出被启动日志污染、要十几秒），这时配 `"screencap": "pull"`；pull 本身也要 3–15 秒，页面首张截图偶尔失败，重试即可
 - **页签切换**：`/api/status` 有 6 秒轮询，前端必须按 `device` 字段过滤过期响应，否则切完页签标题会被旧设备刷回去；电视档干脆不要轮询 adb 设备
 - **电视侧**：只支持三星 Tizen（2016 年及以后）；其他品牌需要各自协议。待机唤醒要电视里开「通过手机开机」+「IP 遥控」，个别机型只支持有线 WoL
+- **投影仪 / 部分电视类固件**：注入的 `KEYCODE_POWER` 会被系统直接忽略（按了没反应），真正能关机的是 `KEYCODE_SLEEP`；但休眠会断网，醒来也不一定自动重连 Wi-Fi，远程开不回来。这类设备用 `power_mode: "sleep"`，页面按电源键先确认，开机交给实体遥控器
 - **安全**：默认没有任何鉴权，局域网内谁都能控制。自己家 Wi-Fi 可以用；如果是共享网络，建议加访问码或只监听 `127.0.0.1` 配合反代
 - 安卓盒子必须开着「网络调试」，这个开关重启后可能自己关掉
 

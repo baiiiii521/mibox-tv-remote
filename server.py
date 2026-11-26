@@ -52,7 +52,8 @@ DEFAULT_CFG = {
          "input_dev": "/dev/input/event0"},
         {"id": "projector", "label": "投影仪", "kind": "adb",
          "serial": "192.168.1.56:5555", "model": "OBE_C3Air",
-         "input_dev": "/dev/input/event0", "screencap": "pull"},
+         "input_dev": "/dev/input/event0", "screencap": "pull",
+         "power_mode": "sleep"},
     ],
     "tv_ip": "192.168.1.61",
     "tv_port": 8002,
@@ -310,6 +311,10 @@ class Box:
         self.last_key_ms = 0
         self.exec_out_ok = True
         self.screencap_mode = cfg.get("screencap") or "auto"
+        # 电源键语义：power = KEYCODE_POWER(26)；sleep = KEYCODE_SLEEP(223)。
+        # 有些投影仪会忽略注入的 26，只认 223；但 223 会断网、远程开不回来，
+        # 所以前端按下之前会先弹确认。
+        self.power_mode = cfg.get("power_mode") or "power"
         self._info = {}
         self._start()
         threading.Thread(target=self._focus_loop, daemon=True).start()
@@ -549,6 +554,12 @@ class Box:
     def key(self, name: str, n: int = 1) -> None:
         n = max(1, min(int(n), 12))
         t0 = time.time()
+        if name == "POWER" and self.power_mode == "sleep":
+            # 这台设备不认注入的 KEYCODE_POWER，真能关机的是 KEYCODE_SLEEP。
+            # 注意：休眠后网络会断，只能靠实体遥控器唤醒（前端已做确认）。
+            self.run("input keyevent 223", timeout=10)
+            self.last_key_ms = int((time.time() - t0) * 1000)
+            return
         code = LINUX_KEYS.get(name)
         if code is not None:
             try:
@@ -917,6 +928,7 @@ class Handler(BaseHTTPRequestHandler):
             "model": b.cfg.get("model", ""),
             "serial": b.serial,
             "online": b.state == "online",
+            "power_mode": b.power_mode,
         } for b in BOXES.values()]
         self._json({
             "online": online,

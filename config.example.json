@@ -18,7 +18,8 @@
       "serial": "192.168.1.101:5555",
       "model": "OBE_C3Air",
       "input_dev": "/dev/input/event0",
-      "screencap": "pull"
+      "screencap": "pull",
+      "power_mode": "sleep"
     }
   ],
   "tv_ip": "192.168.1.102",

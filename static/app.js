@@ -15,6 +15,7 @@
   let appsRendered = false;
   let errShownAt = 0;
   let lastPkg = '';
+  let lastDevices = [];      // /api/status 里的设备清单（含 power_mode / online）
   let currentDevice = '';    // 服务端此刻真正在控的设备 id
   let currentMode = 'mibox'; // 页面选中的页签（可能是 tv）
   let pollTimer = null;
@@ -147,6 +148,7 @@
       lastPkg = '';
     }
     if (!s.online) banner.textContent = (s.device_label || '设备') + ' 未连接 · 点这里重连';
+    if (Array.isArray(s.devices)) lastDevices = s.devices;
     devName.textContent = s.model || s.device_label || devName.textContent;
     setOnline(!!s.online);
     if (s.online) {
@@ -540,10 +542,25 @@
     btn.addEventListener('click', () => setMode(btn.dataset.mode));
   });
 
-  // 顶部电源键：跟着当前页签走 —— 电视档发三星的 POWER，盒子/投影仪档发 adb 的 POWER
+  // 顶部电源键：跟着当前页签走
+  //  - 电视档：发三星的 POWER（待机时服务端会先发 WoL）
+  //  - 盒子档：发 adb 的 POWER
+  //  - power_mode=sleep 的设备（投影仪）：先确认再发休眠 —— 它休眠就断网，远程开不回来
   bindTap($('#btnPower'), () => {
-    if (currentMode === 'tv') sendTvKey('POWER');
-    else sendKey('POWER');
+    if (currentMode === 'tv') {
+      sendTvKey('POWER');
+      return;
+    }
+    const dev = (lastDevices || []).find(d => d.id === currentMode);
+    if (dev && dev.power_mode === 'sleep') {
+      if (!dev.online) {
+        toast((dev.label || '设备') + '已休眠，只能用实体遥控器开机', true);
+        return;
+      }
+      const name = dev.label || '设备';
+      if (!confirm('确认关机？\n\n关机后远程开不了，只能用' + name + '的实体遥控器重新开机。')) return;
+    }
+    sendKey('POWER');
   });
 
   /* ---------------- 启动 ----------------
